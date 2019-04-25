@@ -1,13 +1,56 @@
+--################################################
+--########## Material idr/num_r3 mapping #########
+--################################################
+
+DROP TABLE IF EXISTS material_mapping;
+CREATE TEMP TABLE IF NOT EXISTS material_mapping(
+	sku_idr_sku		INT8,
+	material_id     INT8
+	)
+DISTKEY(sku_idr_sku)
+SORTKEY(sku_idr_sku);
+TRUNCATE material_mapping;
+
+INSERT INTO material_mapping
+SELECT ds.sku_idr_sku,
+       ds.sku_num_sku_r3
+FROM cds.d_sku ds;
+
+--#####################################################################
+--#################### Getting article lifestages #####################
+--#####################################################################
+DROP TABLE IF EXISTS lifestages;
+CREATE TEMP TABLE IF NOT EXISTS lifestages(
+    material_id		INT8,
+    sales_org       VARCHAR(4),
+    lifestage       VARCHAR(1)
+)
+DISTKEY(material_id)
+SORTKEY(material_id, sales_org);
+
+TRUNCATE lifestages;
+
+INSERT INTO lifestages
+SELECT CAST(sdm.material_id AS INT8) AS material_id,
+       sales_org,
+       lifestage
+FROM cds_supply.sales_data_material sdm
+WHERE distrib_channel = '02'
+GROUP BY material_id,
+         sales_org,
+         lifestage;
+
+
 --#####################################################################
 --######## Getting sales organizations with bu_idr ####################
 --#####################################################################
 DROP TABLE IF EXISTS salesorg_store_idr;
 CREATE TEMP TABLE IF NOT EXISTS salesorg_store_idr
 (
-	store			VARCHAR(5)	NOT NULL PRIMARY KEY,
+	store					VARCHAR(5)	NOT NULL PRIMARY KEY,
 	but_idr_business_unit	INT4		NOT NULL,
-	cnt_idr_country		INT8		NOT NULL,
-	salesorg 		VARCHAR(4)	NOT NULL
+	cnt_idr_country			INT8		NOT NULL,
+	salesorg 				VARCHAR(4)	NOT NULL
 )
 DISTSTYLE ALL
 SORTKEY(store, salesorg);
@@ -23,7 +66,42 @@ FROM cds.d_business_unit AS bu
 INNER JOIN cds_supply.sites_attribut_0plant_branches AS sa
   		ON LTRIM(sa.plant_id,'0') = CAST(bu.but_num_business_unit AS VARCHAR (5))
 WHERE bu.but_num_typ_but = 7
+AND 	sa.sales_org IN ({{salesorg}})
 AND   sa.sapsrc = 'PRT';
+
+--#####################################################################
+--######## Getting number of saling store per article #################
+--#####################################################################
+
+DROP TABLE IF EXISTS saling_stores;
+CREATE TEMP TABLE IF NOT EXISTS saling_stores
+(
+	salesorg		VARCHAR(4)	NOT NULL,
+	article			INT8		NOT NULL,
+	store_count		SMALLINT	NOT NULL
+)
+DISTKEY(article)
+SORTKEY(salesorg, article);
+
+TRUNCATE saling_stores;
+
+INSERT INTO saling_stores
+SELECT 
+	ssi.salesorg AS salesorg,
+	mm.material_id AS article,
+	COUNT(DISTINCT td.but_idr_business_unit) AS store_count
+FROM cds.f_transaction_detail td
+INNER JOIN salesorg_store_idr ssi
+		ON ssi.but_idr_business_unit = td.but_idr_business_unit
+INNER JOIN material_mapping mm
+		ON mm.sku_idr_sku = td.sku_idr_sku
+WHERE td.tdt_date_to_ordered >= date_trunc('week',CURRENT_TIMESTAMP-interval '52 week') -1
+	AND td.sku_idr_sku <> 0
+	AND tdt_type_detail = 'sale'
+	AND td.f_qty_item > 0
+GROUP BY
+	ssi.salesorg,
+	mm.material_id;
 
 --#####################################################################
 --################# Temp table first sales date #######################
@@ -32,8 +110,8 @@ DROP TABLE IF EXISTS first_sale_temp;
 CREATE TEMP TABLE IF NOT EXISTS first_sale_temp
 (
 	cnt_idr_country	INT8,
-	sku_idr_sku	INT8,
-	first_sale	DATE
+	sku_idr_sku		INT8,
+	first_sale		DATE
 )
 DISTKEY(sku_idr_sku)
 SORTKEY(cnt_idr_country, sku_idr_sku);
@@ -60,9 +138,8 @@ DROP TABLE IF EXISTS first_sale;
 CREATE TEMP TABLE IF NOT EXISTS first_sale
 (
 	cnt_idr_country	INT8,
-	sku_idr_sku	INT8,
-	first_sale	DATE,
-	period_case	INT4
+	sku_idr_sku		INT8,
+	first_sale		DATE
 )
 DISTKEY(sku_idr_sku)
 SORTKEY(cnt_idr_country, sku_idr_sku);
@@ -72,17 +149,12 @@ TRUNCATE first_sale;
 INSERT INTO first_sale
 SELECT fst.cnt_idr_country AS cnt_idr_country,
        fst.sku_idr_sku AS sku_idr_sku,
-       first_sale,
-       CASE WHEN first_sale > date_trunc('day',CURRENT_TIMESTAMP)-interval '52 week' THEN 1
-            WHEN first_sale > date_trunc('day',CURRENT_TIMESTAMP)-interval '104 week' THEN 2
-            ELSE 3
-       END AS period_case
+       first_sale
 FROM first_sale_temp fst
 INNER JOIN cds.d_sku ds
 ON ds.sku_idr_sku = fst.sku_idr_sku
 WHERE ds.sku_date_end = '2999-12-31 23:59:59'
 	AND	ds.unv_num_univers <> 0;
-
 
 --#####################################################################
 --######################## Weekly sales ###############################
@@ -90,11 +162,11 @@ WHERE ds.sku_date_end = '2999-12-31 23:59:59'
 DROP TABLE IF EXISTS weekly_sales;
 CREATE TEMP TABLE IF NOT EXISTS weekly_sales
 (
-	cnt_idr_country		INT8,
+	cnt_idr_country			INT8,
 	but_idr_business_unit	INT4,
-	sku_idr_sku		INT8,
-	wk_date			DATE,
-	qty			INT8
+	sku_idr_sku				INT8,
+	wk_date					DATE,
+	qty						INT8
 )
 DISTKEY(sku_idr_sku)
 SORTKEY(cnt_idr_country, sku_idr_sku);
@@ -253,3 +325,63 @@ WHERE ritqm1.ref_but_idr_business_unit =
 	(SELECT MAX(ritqm2.ref_but_idr_business_unit)
 	 FROM refitem_temp_qty_max ritqm2
  	 WHERE ritqm1.sku_idr_sku = ritqm2.sku_idr_sku)
+        
+--#####################################################################
+--####################### Final dataset ###############################
+--#####################################################################
+DROP TABLE IF EXISTS dataset;
+CREATE TEMP TABLE IF NOT EXISTS dataset
+(
+	salesorg		VARCHAR(4),
+	article			INT8,
+	date			DATE,
+	qty			INT8
+)
+DISTKEY(article)
+SORTKEY(salesorg, article);
+
+TRUNCATE dataset;
+
+INSERT INTO dataset
+SELECT	ssi.salesorg AS salesorg,
+		mm.material_id	AS article,
+		ws.wk_date AS date,
+		SUM(ws.qty) AS qty
+FROM weekly_sales ws
+INNER JOIN salesorg_store_idr ssi
+		ON ssi.but_idr_business_unit = ws.but_idr_business_unit
+INNER JOIN material_mapping mm
+	ON mm.sku_idr_sku = ws.sku_idr_sku
+INNER JOIN lifestages ls
+	ON ls.material_id = mm.material_id
+       AND ls.sales_org = ssi.salesorg
+INNER JOIN first_sale fs
+	ON fs.sku_idr_sku = ws.sku_idr_sku
+       AND fs.cnt_idr_country = ws.cnt_idr_country
+WHERE	ls.lifestage IN (1,3)
+AND fs.first_sale < date_trunc('week',CURRENT_TIMESTAMP-interval '104 week') -1
+GROUP BY
+	ssi.salesorg,
+	mm.material_id,
+	ws.wk_date;
+
+--#####################################################################
+--#################### Lifestage = 7 articles #########################
+--#####################################################################
+DROP TABLE IF EXISTS lsseven;
+CREATE TEMP TABLE IF NOT EXISTS lsseven
+(
+    sales_org     VARCHAR(4),
+    material_id		INT8
+)
+DISTKEY(material_id)
+SORTKEY(material_id, sales_org);
+
+TRUNCATE lsseven;
+
+INSERT INTO lsseven
+SELECT  ls.sales_org    AS sales_org,
+        ls.material_id  AS material_id
+FROM lifestages ls
+WHERE ls.lifestage = 7
+AND   ls.sales_org IN ({{salesorg}}); 
