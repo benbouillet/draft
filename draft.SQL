@@ -66,7 +66,7 @@ FROM cds.d_business_unit AS bu
 INNER JOIN cds_supply.sites_attribut_0plant_branches AS sa
   		ON LTRIM(sa.plant_id,'0') = CAST(bu.but_num_business_unit AS VARCHAR (5))
 WHERE bu.but_num_typ_but = 7
-AND 	sa.sales_org IN ({{salesorg}})
+AND 	sa.sales_org IN ('Z002')
 AND   sa.sapsrc = 'PRT';
 
 --#####################################################################
@@ -209,6 +209,8 @@ CREATE TEMP TABLE IF NOT EXISTS refitem_temp
 	ref_but_idr_business_unit	INT4,
 	ref_sku_idr_sku			INT8
 )
+DISTKEY(sku_idr_sku)
+SORTKEY(sku_idr_sku);
 
 TRUNCATE refitem_temp;
 
@@ -232,7 +234,7 @@ GROUP BY
 	ssi.salesorg,
 	sk1.sku_idr_sku,
 	bu.but_idr_business_unit,
-	sk2.sku_idr_sku
+	sk2.sku_idr_sku;
 
 --#####################################################################
 --################### Ref Item temp with qty ##########################
@@ -246,6 +248,8 @@ CREATE TEMP TABLE IF NOT EXISTS refitem_temp_qty
 	ref_sku_idr_sku			INT8,
 	qty				INT8
 )
+DISTKEY(sku_idr_sku)
+SORTKEY(sku_idr_sku);
 
 TRUNCATE refitem_temp_qty;
 
@@ -260,12 +264,12 @@ FROM refitem_temp rit
 INNER JOIN weekly_sales ws
 	ON ws.but_idr_business_unit = rit.ref_but_idr_business_unit
        AND ws.sku_idr_sku = rit.ref_sku_idr_sku
-WHERE rit.salesorg IN ('Z015')
+WHERE rit.salesorg IN ('Z002')
 GROUP BY
 rit.salesorg,
 rit.sku_idr_sku,
 rit.ref_but_idr_business_unit,
-rit.ref_sku_idr_sku
+rit.ref_sku_idr_sku;
 
 --#####################################################################
 --############### Ref Item temp with max qties ########################
@@ -279,6 +283,8 @@ CREATE TEMP TABLE IF NOT EXISTS refitem_temp_qty_max
 	ref_sku_idr_sku			INT8,
 	qty				INT8
 )
+DISTKEY(sku_idr_sku)
+SORTKEY(sku_idr_sku);
 
 TRUNCATE refitem_temp_qty_max;
 
@@ -295,8 +301,7 @@ WHERE qty =
 	 FROM refitem_temp_qty ritq2
  	 WHERE ritq1.sku_idr_sku = ritq2.sku_idr_sku)
  ORDER BY
- 	ritq1.sku_idr_sku
- 
+ 	ritq1.sku_idr_sku;
 
 --#####################################################################
 --############### Ref Item finale table ###### ########################
@@ -310,6 +315,8 @@ CREATE TEMP TABLE IF NOT EXISTS refitem
 	ref_sku_idr_sku			INT8,
 	qty				INT8
 )
+DISTKEY(sku_idr_sku)
+SORTKEY(sku_idr_sku);
 
 TRUNCATE refitem;
 
@@ -324,7 +331,7 @@ FROM refitem_temp_qty_max ritqm1
 WHERE ritqm1.ref_but_idr_business_unit = 
 	(SELECT MAX(ritqm2.ref_but_idr_business_unit)
 	 FROM refitem_temp_qty_max ritqm2
- 	 WHERE ritqm1.sku_idr_sku = ritqm2.sku_idr_sku)
+ 	 WHERE ritqm1.sku_idr_sku = ritqm2.sku_idr_sku);
         
 --#####################################################################
 --####################### Final dataset ###############################
@@ -335,7 +342,7 @@ CREATE TEMP TABLE IF NOT EXISTS dataset
 	salesorg		VARCHAR(4),
 	article			INT8,
 	date			DATE,
-	qty			INT8
+	qty				INT8
 )
 DISTKEY(article)
 SORTKEY(salesorg, article);
@@ -351,19 +358,18 @@ FROM weekly_sales ws
 INNER JOIN salesorg_store_idr ssi
 		ON ssi.but_idr_business_unit = ws.but_idr_business_unit
 INNER JOIN material_mapping mm
-	ON mm.sku_idr_sku = ws.sku_idr_sku
+		ON mm.sku_idr_sku = ws.sku_idr_sku
 INNER JOIN lifestages ls
-	ON ls.material_id = mm.material_id
-       AND ls.sales_org = ssi.salesorg
+		ON ls.material_id = mm.material_id
+	   AND ls.sales_org = ssi.salesorg
 INNER JOIN first_sale fs
-	ON fs.sku_idr_sku = ws.sku_idr_sku
-       AND fs.cnt_idr_country = ws.cnt_idr_country
+		ON fs.sku_idr_sku = ws.sku_idr_sku
+	   AND fs.cnt_idr_country = ws.cnt_idr_country
 WHERE	ls.lifestage IN (1,3)
 AND fs.first_sale < date_trunc('week',CURRENT_TIMESTAMP-interval '104 week') -1
-GROUP BY
-	ssi.salesorg,
-	mm.material_id,
-	ws.wk_date;
+GROUP BY	ssi.salesorg,
+			mm.material_id,
+			ws.wk_date;
 
 --#####################################################################
 --#################### Lifestage = 7 articles #########################
@@ -384,4 +390,4 @@ SELECT  ls.sales_org    AS sales_org,
         ls.material_id  AS material_id
 FROM lifestages ls
 WHERE ls.lifestage = 7
-AND   ls.sales_org IN ({{salesorg}}); 
+AND   ls.sales_org IN ('Z002'); 
